@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>BG Fund — Sub-Strategy Track Record</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
 :root{
@@ -45,10 +46,52 @@ table{border-collapse:collapse;width:100%;font-size:12px}
 .pos{color:var(--green)}.neg{color:var(--red)}
 .swatch{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:6px;vertical-align:middle}
 .foot{font-size:10px;color:var(--text3);padding:10px 2px;line-height:1.5}
+.btn{background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:8px 14px;font-size:12px;font-family:'DM Sans',sans-serif;cursor:pointer;transition:all .15s}
+.btn:hover{border-color:var(--accent);color:var(--accent2)}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+.btn.primary:hover{background:var(--accent2);color:#fff}
+.header-actions{display:flex;gap:8px;align-items:center}
+.daterange{display:flex;gap:8px;align-items:center;margin-left:auto}
+.modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.6);backdrop-filter:blur(2px);display:none;align-items:flex-start;justify-content:center;z-index:50;padding:40px 16px;overflow-y:auto}
+.modal-overlay.open{display:flex}
+.modal-box{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:22px;width:100%;max-width:680px}
+.modal-box h2{font-size:16px;margin:0 0 4px;font-weight:700}
+.modal-box .desc{font-size:12px;color:var(--text2);margin:0 0 14px;line-height:1.5}
+.modal-box textarea{width:100%;min-height:160px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:10px;font-family:'JetBrains Mono',monospace;font-size:11px;resize:vertical}
+.modal-row{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:12px}
+.modal-foot{display:flex;gap:8px;justify-content:flex-end;margin-top:14px;flex-wrap:wrap}
+.import-msg{font-size:12px;margin-top:10px;min-height:16px}
+.import-msg.ok{color:var(--green)}.import-msg.err{color:var(--red)}
+.keyhint{font-size:10px;color:var(--text3);font-family:'JetBrains Mono',monospace;background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:8px 10px;line-height:1.6;word-break:break-word;margin-top:8px}
 </style>
 </head>
 <body>
 <div class="app"><div id="root"></div></div>
+
+<div class="modal-overlay" id="importModal">
+  <div class="modal-box">
+    <h2>Import data</h2>
+    <p class="desc">Load an Excel file (.xlsx / .xls) — or paste CSV/TSV — to add or update months. The first column must be the date <code>d</code> (YYYY-MM-DD), the first row is the header of column keys. The matching sheet (<code>perf</code> / <code>exp</code> / <code>ear</code>) is used if present, otherwise the first sheet. Existing dates are updated in place; new dates are appended. Blank cells are left untouched.</p>
+    <div class="modal-row">
+      <label style="font-size:12px;color:var(--text2)">Table</label>
+      <select id="importTable" onchange="updateKeyHint()">
+        <option value="perf">Performance (P&L contribution, bps)</option>
+        <option value="exp">Exposure</option>
+        <option value="ear">EAR</option>
+      </select>
+      <label class="btn" style="margin-left:auto">Load file…<input type="file" id="importFile" accept=".xlsx,.xls,.csv,.tsv,.txt" style="display:none"></label>
+    </div>
+    <div class="keyhint" id="keyHint"></div>
+    <textarea id="importText" placeholder="d,mc,cb,vt,wa,ra,ls,cl,ca,cx,ts,t&#10;2026-06-30,12,40,15,3,8,5,6,2,4,9,104"></textarea>
+    <div class="import-msg" id="importMsg"></div>
+    <div class="modal-foot">
+      <button class="btn" onclick="downloadData()">⬇ Download data.js</button>
+      <button class="btn" onclick="closeImport()">Cancel</button>
+      <button class="btn primary" onclick="runImport()">Import</button>
+    </div>
+  </div>
+</div>
+
 <script src="data.js"></script>
 <script>
 // ===== strategies (9 reconciled to the Exposure-sheet nomenclature) =====
@@ -70,12 +113,16 @@ const BASES = {
   ear:   {label:'EAR',            mode:'mult', unit:'%'},
   bps:   {label:'Contribution (bps)', mode:'add', unit:'bps'},
 };
-const state = {base:'gross', strat:'cbm'};
+const state = {base:'gross', strat:'cbm', start:null, end:null};
 
 // ===== joins (by year-month, sheets use month-end vs last-business-day) =====
-const expByYM={}, earByYM={};
-DATA.exp.forEach(r=>expByYM[r.d.slice(0,7)]=r);
-DATA.ear.forEach(r=>earByYM[r.d.slice(0,7)]=r);
+let expByYM={}, earByYM={};
+function rebuildJoins(){
+  expByYM={}; earByYM={};
+  DATA.exp.forEach(r=>expByYM[r.d.slice(0,7)]=r);
+  DATA.ear.forEach(r=>earByYM[r.d.slice(0,7)]=r);
+}
+rebuildJoins();
 let charts={};
 function destroy(){Object.values(charts).forEach(c=>{try{c.destroy()}catch(e){}});charts={}}
 
@@ -97,11 +144,12 @@ function baseVal(g,r,base){ // fraction of NAV, or null
 }
 
 // monthly series (value = ret fraction, or bps for additive) from the strategy's inception
-function buildSeries(g, base){
+function buildSeries(g, base, perf){
+  perf = perf || DATA.perf;
   const mode=BASES[base].mode;
   const dates=[], vals=[]; let started=false;
   let gaps=0;
-  DATA.perf.forEach(r=>{
+  perf.forEach(r=>{
     const c=contribOf(g,r); if(c===null) return;          // contribution not reported
     let v=null;
     if(base==='bps'){ v=c; }
@@ -152,9 +200,16 @@ const numColor=v=>v>0?'pos':v<0?'neg':'';
 function render(){
   destroy();
   const base=state.base, B=BASES[base];
-  const allSeries = STRATS.map(g=>({g, s:buildSeries(g, base)}));
+  // ----- period filter -----
+  const allDates = DATA.perf.map(r=>r.d);
+  if(state.start==null || !allDates.includes(state.start)) state.start=allDates[0];
+  if(state.end==null   || !allDates.includes(state.end))   state.end=allDates[allDates.length-1];
+  let lo=state.start, hi=state.end;
+  if(lo>hi){const t=lo;lo=hi;hi=t;}                          // tolerate inverted picks
+  const perf = DATA.perf.filter(r=>r.d>=lo && r.d<=hi);
+  const allSeries = STRATS.map(g=>({g, s:buildSeries(g, base, perf)}));
   // master date axis
-  const masterDates = DATA.perf.map(r=>r.d);
+  const masterDates = perf.map(r=>r.d);
   const dateIdx={}; masterDates.forEach((d,i)=>dateIdx[d]=i);
 
   const baseNote = base==='ear'
@@ -170,11 +225,25 @@ function render(){
         <h1>BG Fund — Sub-Strategy Track Record</h1>
         <div class="sub">Boussard & Gavaudan Flagship Fund · reconstructed monthly returns by strategy · ${fmtDate(DATA.perf[0].d)} – ${fmtDate(DATA.perf[DATA.perf.length-1].d)}</div>
       </div>
+      <div class="header-actions">
+        <button class="btn" onclick="openImport()">＋ Import data</button>
+      </div>
     </div>
     <div class="controls">
       <label>Return base</label>
       <div class="pillbar">
         ${Object.entries(BASES).map(([k,v])=>`<div class="pill ${k===base?'active':''}" onclick="state.base='${k}';render()">${v.label}</div>`).join('')}
+      </div>
+      <div class="daterange">
+        <label>Period</label>
+        <select onchange="state.start=this.value;render()">
+          ${allDates.map(d=>`<option value="${d}" ${d===state.start?'selected':''}>${fmtDate(d)}</option>`).join('')}
+        </select>
+        <label style="margin:0 -4px">→</label>
+        <select onchange="state.end=this.value;render()">
+          ${allDates.map(d=>`<option value="${d}" ${d===state.end?'selected':''}>${fmtDate(d)}</option>`).join('')}
+        </select>
+        ${(lo!==allDates[0]||hi!==allDates[allDates.length-1])?`<button class="btn" onclick="state.start=null;state.end=null;render()">Reset</button>`:''}
       </div>
     </div>
     <div class="note">${baseNote} Each strategy’s track record starts at its first available month (the attribution sheet breaks strategies out at different dates: 2003 / 2009 / 2016). Chained ${B.mode==='mult'?'multiplicatively (base 100)':'additively (cumulative bps)'}.</div>
@@ -247,7 +316,7 @@ function render(){
 
   // ===== selected strategy: drawdown + calendar =====
   const g=STRATS.find(x=>x.k===state.strat)||STRATS[0];
-  const s=buildSeries(g, base);
+  const s=buildSeries(g, base, perf);
   document.getElementById('ddTitle').textContent='Drawdown — '+g.l;
   document.getElementById('calTitle').textContent=g.l+' / '+B.label;
 
@@ -278,6 +347,106 @@ function render(){
     const yt=ytd(ms); ch+='<td style="font-weight:700;'+(yt==null?'':(yt>=0?'color:var(--green)':'color:var(--red)'))+'">'+(yt!=null?fmtVal(yt,B.mode,B.mode==='add'?0:2):'—')+'</td></tr>'; });
   ch+='</tbody>';
   document.getElementById('calTable').innerHTML=ch;
+}
+
+// ===== import =====
+const TABLE_KEYS = {
+  perf: ['d','yr','vs','mc','cb','vt','wa','es','cs','ts','t','ra','ls','cl','ca','cx'],
+  exp:  ['d','cb','cb_l','cb_s','vt','vt_l','vt_s','wa','wa_l','wa_s','eq','eq_l','eq_s','ra','ra_l','ra_s','ls','ls_l','ls_s','cl','cl_l','cl_s','cs','cs_l','cs_s','cx','cx_l','cx_s','tr','tr_l','tr_s','qe','qe_l','qe_s','sy','sy_l','sy_s','ot','ot_l','ot_s','g','n','l','s','am'],
+  ear:  ['d','te','vt','et','ct','tt'],
+};
+function msg(t,cls){const e=document.getElementById('importMsg');e.textContent=t;e.className='import-msg '+(cls||'');}
+function updateKeyHint(){
+  const t=document.getElementById('importTable').value;
+  document.getElementById('keyHint').textContent='Valid keys for "'+t+'": '+TABLE_KEYS[t].join(', ');
+}
+function openImport(){updateKeyHint();msg('');document.getElementById('importModal').classList.add('open');}
+function closeImport(){document.getElementById('importModal').classList.remove('open');}
+document.getElementById('importModal').addEventListener('click',e=>{if(e.target.id==='importModal')closeImport();});
+function fmtCell(v){
+  if(v instanceof Date){const y=v.getFullYear(),m=String(v.getMonth()+1).padStart(2,'0'),d=String(v.getDate()).padStart(2,'0');return y+'-'+m+'-'+d;}
+  return v==null?'':String(v).trim();
+}
+function excelToText(buf, pref){
+  const wb=XLSX.read(buf,{cellDates:true});
+  const name=wb.SheetNames.find(n=>n.toLowerCase()===pref) || wb.SheetNames[0];
+  const rows=XLSX.utils.sheet_to_json(wb.Sheets[name],{defval:'',raw:true});
+  if(!rows.length) throw 'Sheet "'+name+'" is empty.';
+  const keys=[]; rows.forEach(r=>Object.keys(r).forEach(k=>{if(!keys.includes(k))keys.push(k);}));
+  const di=keys.indexOf('d'); if(di>0){keys.splice(di,1);keys.unshift('d');}   // date column first
+  const lines=[keys.join('\t')];
+  rows.forEach(r=>lines.push(keys.map(k=>fmtCell(r[k])).join('\t')));
+  return {text:lines.join('\n'), sheet:name, n:rows.length};
+}
+document.getElementById('importFile').addEventListener('change',e=>{
+  const f=e.target.files[0]; if(!f)return;
+  const isXls=/\.(xlsx|xls)$/i.test(f.name);
+  const rd=new FileReader();
+  rd.onload=()=>{
+    try{
+      if(isXls){
+        const res=excelToText(rd.result, document.getElementById('importTable').value);
+        document.getElementById('importText').value=res.text;
+        msg('Loaded sheet "'+res.sheet+'" ('+res.n+' rows) from '+f.name+' — review and click Import.','ok');
+      }else{
+        document.getElementById('importText').value=rd.result;
+        msg('Loaded "'+f.name+'" — review and click Import.','ok');
+      }
+    }catch(err){ msg(typeof err==='string'?err:'Could not read the file.','err'); }
+    e.target.value='';                                     // allow re-loading the same file
+  };
+  isXls ? rd.readAsArrayBuffer(f) : rd.readAsText(f);
+});
+function parseRows(text){
+  const lines=text.replace(/\r/g,'').split('\n').map(l=>l.trim()).filter(l=>l.length);
+  if(lines.length<2) throw 'Need a header line plus at least one data row.';
+  const delim = lines[0].includes('\t') ? '\t' : ',';
+  const header=lines[0].split(delim).map(s=>s.trim());
+  if(header[0]!=='d') throw 'First column header must be "d" (the date).';
+  return lines.slice(1).map(line=>{
+    const cells=line.split(delim);
+    const rec={};
+    header.forEach((k,i)=>{
+      let v=(cells[i]||'').trim();
+      if(v==='' ) return;                                   // leave blank cells untouched
+      if(k==='d'){ rec.d=v; return; }
+      const num=parseFloat(v);
+      rec[k]= isNaN(num) ? v : num;
+    });
+    if(!rec.d) throw 'A row is missing its date.';
+    if(!/^\d{4}-\d{2}-\d{2}$/.test(rec.d)) throw 'Bad date "'+rec.d+'" — use YYYY-MM-DD.';
+    return rec;
+  });
+}
+function runImport(){
+  const table=document.getElementById('importTable').value;
+  const valid=new Set(TABLE_KEYS[table]);
+  let rows;
+  try{ rows=parseRows(document.getElementById('importText').value); }
+  catch(err){ msg(typeof err==='string'?err:'Could not parse the input.','err'); return; }
+  // validate columns
+  const unknown=new Set();
+  rows.forEach(r=>Object.keys(r).forEach(k=>{if(!valid.has(k))unknown.add(k);}));
+  if(unknown.size){ msg('Unknown column(s) for "'+table+'": '+[...unknown].join(', '),'err'); return; }
+  const oldMax=DATA.perf[DATA.perf.length-1].d;
+  const arr=DATA[table];
+  const byD={}; arr.forEach((r,i)=>byD[r.d]=i);
+  let added=0,updated=0;
+  rows.forEach(r=>{
+    if(byD[r.d]!=null){ Object.assign(arr[byD[r.d]], r); updated++; }
+    else { arr.push(r); byD[r.d]=arr.length-1; added++; }
+  });
+  arr.sort((a,b)=>a.d<b.d?-1:a.d>b.d?1:0);
+  rebuildJoins();
+  if(table==='perf' && state.end===oldMax) state.end=null;  // follow the new latest month
+  render();
+  msg(added+' added, '+updated+' updated in "'+table+'". Use “Download data.js” to save permanently.','ok');
+}
+function downloadData(){
+  const blob=new Blob(['const DATA = '+JSON.stringify(DATA)+';'],{type:'text/javascript'});
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement('a'); a.href=url; a.download='data.js'; a.click();
+  URL.revokeObjectURL(url);
 }
 
 Chart.defaults.color='#94a3b8';
