@@ -1,0 +1,289 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BG Fund — Sub-Strategy Track Record</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#0a0e17;--surface:#111827;--surface2:#1a2234;--surface3:#232d42;
+  --border:#2a3550;--text:#e2e8f0;--text2:#94a3b8;--text3:#64748b;
+  --accent:#3b82f6;--accent2:#60a5fa;--green:#10b981;--red:#ef4444;
+  --amber:#f59e0b;--purple:#a78bfa;--cyan:#22d3ee;--radius:10px;
+}
+*{box-sizing:border-box}
+body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);margin:0;min-height:100vh}
+.app{max-width:1440px;margin:0 auto;padding:20px}
+.header{display:flex;align-items:flex-end;justify-content:space-between;padding:20px 0;border-bottom:1px solid var(--border);margin-bottom:20px;flex-wrap:wrap;gap:12px}
+.header h1{font-size:22px;font-weight:700;letter-spacing:-0.5px;margin:0;background:linear-gradient(135deg,var(--accent2),var(--cyan));-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+.header .sub{color:var(--text3);font-size:13px;margin-top:4px}
+.controls{display:flex;gap:18px;align-items:center;flex-wrap:wrap;margin-bottom:18px}
+.controls label{font-size:12px;color:var(--text2)}
+select{background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:8px 12px;font-size:13px;font-family:'DM Sans',sans-serif;cursor:pointer}
+.pillbar{display:flex;gap:6px;flex-wrap:wrap}
+.pill{background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:8px 14px;font-size:12px;color:var(--text2);cursor:pointer;transition:all .15s}
+.pill.active{color:var(--accent2);border-color:var(--accent);background:rgba(59,130,246,.1)}
+.note{font-size:12px;color:var(--text2);margin:0 0 16px;line-height:1.5}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:18px;margin-bottom:18px}
+.card h3{font-size:14px;margin:0 0 2px;font-weight:600}
+.card .desc{font-size:11px;color:var(--text3);margin-bottom:12px}
+.chart-wrap{position:relative;height:380px}
+.chart-wrap.tall{height:460px}
+.section-title{font-size:13px;font-weight:600;color:var(--text2);text-transform:uppercase;letter-spacing:.5px;margin:24px 0 10px}
+table{border-collapse:collapse;width:100%;font-size:12px}
+.stats th{background:var(--surface2);color:var(--text3);padding:9px 10px;text-align:right;font-weight:500;white-space:nowrap;border-bottom:1px solid var(--border);font-size:11px}
+.stats th:first-child,.stats td:first-child{text-align:left}
+.stats td{padding:8px 10px;text-align:right;border-bottom:1px solid var(--border);font-family:'JetBrains Mono',monospace;white-space:nowrap}
+.stats tr:hover td{background:var(--surface2)}
+.heatmap-wrap{overflow-x:auto}
+.heatmap{border-collapse:collapse;font-size:11px;font-family:'JetBrains Mono',monospace}
+.heatmap th{background:var(--surface2);color:var(--text3);padding:7px 6px;font-weight:500;white-space:nowrap;border:1px solid var(--border);text-align:center;font-size:10px}
+.heatmap td{padding:6px 8px;text-align:center;border:1px solid var(--border);min-width:60px}
+.heatmap td:first-child{text-align:right;background:var(--surface2);color:var(--text3);position:sticky;left:0;min-width:60px}
+.pos{color:var(--green)}.neg{color:var(--red)}
+.swatch{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:6px;vertical-align:middle}
+.foot{font-size:10px;color:var(--text3);padding:10px 2px;line-height:1.5}
+</style>
+</head>
+<body>
+<div class="app"><div id="root"></div></div>
+<script src="data.js"></script>
+<script>
+// ===== strategies (9 reconciled to the Exposure-sheet nomenclature) =====
+const STRATS = [
+  {k:'cbm', l:'Convertible bond & Mandatory arbitrage', color:'#3b82f6', perf:['mc','cb'], ear:'vt', exp:['cb'], expL:['cb_l']},
+  {k:'vt',  l:'Volatility trading',                      color:'#22d3ee', perf:['vt'],      ear:'vt', exp:['vt'], expL:['vt_l']},
+  {k:'wa',  l:'Warrant arbitrage',                       color:'#06b6d4', perf:['wa'],      ear:'vt', exp:['wa'], expL:['wa_l']},
+  {k:'ra',  l:'Risk Arbitrage / Special Situations',     color:'#10b981', perf:['ra'],      ear:'et', exp:['ra'], expL:['ra_l']},
+  {k:'ls',  l:'Long / Short trading',                    color:'#14b8a6', perf:['ls'],      ear:'et', exp:['ls'], expL:['ls_l']},
+  {k:'cl',  l:'Credit Long / Short',                     color:'#f59e0b', perf:['cl'],      ear:'ct', exp:['cl'], expL:['cl_l']},
+  {k:'ca',  l:'Capital structure arbitrage',             color:'#fb923c', perf:['ca'],      ear:'ct', exp:['cs'], expL:['cs_l']},
+  {k:'cx',  l:'Credit special situations',               color:'#f97316', perf:['cx'],      ear:'ct', exp:['cx'], expL:['cx_l']},
+  {k:'ts',  l:'Trading (incl. Quant, Systematic, Other)',color:'#a78bfa', perf:['ts'],      ear:'tt', exp:['tr','qe','sy','ot'], expL:['tr_l','qe_l','sy_l','ot_l']},
+  {k:'_t',  l:'Total Fund',                              color:'#e2e8f0', perf:null,        ear:'te', exp:null, expL:null, total:true},
+];
+const BASES = {
+  gross: {label:'Gross exposure', mode:'mult', unit:'%'},
+  long:  {label:'Long exposure',  mode:'mult', unit:'%'},
+  ear:   {label:'EAR',            mode:'mult', unit:'%'},
+  bps:   {label:'Contribution (bps)', mode:'add', unit:'bps'},
+};
+const state = {base:'gross', strat:'cbm'};
+
+// ===== joins (by year-month, sheets use month-end vs last-business-day) =====
+const expByYM={}, earByYM={};
+DATA.exp.forEach(r=>expByYM[r.d.slice(0,7)]=r);
+DATA.ear.forEach(r=>earByYM[r.d.slice(0,7)]=r);
+let charts={};
+function destroy(){Object.values(charts).forEach(c=>{try{c.destroy()}catch(e){}});charts={}}
+
+const fmtDate=d=>{const x=new Date(d);return x.toLocaleDateString('en-GB',{month:'short',year:'numeric'});};
+const sum=a=>a.reduce((x,y)=>x+y,0);
+const mean=a=>a.length?sum(a)/a.length:0;
+function std(a){if(a.length<2)return 0;const m=mean(a);return Math.sqrt(a.reduce((s,v)=>s+(v-m)*(v-m),0)/(a.length-1));}
+
+function contribOf(g,r){
+  if(g.total) return r.t!=null?r.t:null;
+  let s=0,any=false; g.perf.forEach(k=>{if(r[k]!=null){s+=r[k];any=true;}}); return any?s:null;
+}
+function baseVal(g,r,base){ // fraction of NAV, or null
+  const ym=r.d.slice(0,7);
+  if(base==='ear'){const e=earByYM[ym];return e&&e[g.ear]!=null?e[g.ear]:null;}
+  const x=expByYM[ym]; if(!x) return null;
+  const keys = base==='long' ? (g.total?['l']:g.expL) : (g.total?['g']:g.exp);
+  let s=0,any=false; keys.forEach(k=>{if(x[k]!=null){s+=x[k];any=true;}}); return any?s:null;
+}
+
+// monthly series (value = ret fraction, or bps for additive) from the strategy's inception
+function buildSeries(g, base){
+  const mode=BASES[base].mode;
+  const dates=[], vals=[]; let started=false;
+  let gaps=0;
+  DATA.perf.forEach(r=>{
+    const c=contribOf(g,r); if(c===null) return;          // contribution not reported
+    let v=null;
+    if(base==='bps'){ v=c; }
+    else {
+      const b=baseVal(g,r,base);
+      if(b!=null && Math.abs(b)>=0.005){                   // need ≥0.5% of NAV to define a return
+        const rv=(c/10000)/b;
+        v = Math.abs(rv)<=1 ? rv : null;                   // drop tiny-denominator blow-ups (|ret|>100%)
+      }
+    }
+    if(!started){ if(v==null) return; started=true; }     // start at first computable point
+    if(started && v==null) gaps++;                         // month inside record but not computable
+    dates.push(r.d); vals.push(v);
+  });
+  // index
+  const idx=[];
+  if(mode==='add'){ let s=0; vals.forEach(v=>{s+=(v||0);idx.push(s);}); }
+  else { let x=100; vals.forEach(v=>{ if(v!=null)x*=(1+v); idx.push(x); }); }
+  // stats
+  const valid=vals.filter(v=>v!=null);
+  const n=valid.length, m=mean(valid), volA=std(valid)*Math.sqrt(12);
+  const dn=valid.filter(v=>v<0), downA=Math.sqrt(mean(dn.map(v=>v*v))||0)*Math.sqrt(12);
+  let peak=-Infinity,dd=0,ddEnd=null,curPk=null,ddPk=null;
+  idx.forEach((v,i)=>{ if(mode==='add'){ if(v>peak){peak=v;curPk=dates[i];} const x=v-peak; if(x<dd){dd=x;ddEnd=dates[i];ddPk=curPk;} }
+                       else { if(v>peak){peak=v;curPk=dates[i];} const x=v/peak-1; if(x<dd){dd=x;ddEnd=dates[i];ddPk=curPk;} } });
+  let cum,ann;
+  if(mode==='add'){ cum=idx[idx.length-1]||0; ann=n? (cum/n)*12 : 0; } // total bps, avg annualised bps
+  else { cum=(idx[idx.length-1]/100)-1; ann=n? Math.pow(idx[idx.length-1]/100,12/n)-1 : 0; }
+  const sharpe=volA>0?(m*12)/volA:0, sortino=downA>0?(m*12)/downA:0;
+  return {dates, vals, idx, n, gaps, start:dates[0], end:dates[dates.length-1], mode,
+    cum, ann, volA, sharpe, sortino, dd, ddPk, ddEnd,
+    best:valid.length?Math.max(...valid):0, worst:valid.length?Math.min(...valid):0,
+    pctPos:valid.length?valid.filter(v=>v>0).length/valid.length:0};
+}
+
+// ===== formatting =====
+const pctR=(v,d2=2)=>v==null?'—':(v>=0?'+':'')+(v*100).toFixed(d2)+'%';
+const bpsR=(v,d2=0)=>v==null?'—':(v>=0?'+':'')+v.toFixed(d2)+' bps';
+function fmtVal(v,mode,d2){ return mode==='add'? bpsR(v,d2) : pctR(v,d2); }
+function fmtCum(s){ return s.mode==='add'? Math.round(s.cum)+' bps' : pctR(s.cum); }
+function fmtAnn(s){ return s.mode==='add'? Math.round(s.ann)+' bps/yr' : pctR(s.ann); }
+function fmtVol(s){ return s.mode==='add'? (s.volA/100).toFixed(2)+'%' : (s.volA*100).toFixed(2)+'%'; }
+function fmtDD(s){ return s.mode==='add'? Math.round(Math.abs(s.dd))+' bps' : pctR(s.dd); }
+function fmtBW(v,s){ return s.mode==='add'? bpsR(v,0) : pctR(v); }
+const numColor=v=>v>0?'pos':v<0?'neg':'';
+
+// ===== render =====
+function render(){
+  destroy();
+  const base=state.base, B=BASES[base];
+  const allSeries = STRATS.map(g=>({g, s:buildSeries(g, base)}));
+  // master date axis
+  const masterDates = DATA.perf.map(r=>r.d);
+  const dateIdx={}; masterDates.forEach((d,i)=>dateIdx[d]=i);
+
+  const baseNote = base==='ear'
+    ? 'Return = monthly contribution ÷ EAR (parent asset-class bucket). EAR is reported from 2003.'
+    : base==='bps'
+      ? 'Cumulative monthly P&L contribution in bps (no normalisation) — how much each strategy added to the fund.'
+      : 'Return = monthly contribution ÷ the strategy’s own '+(base==='long'?'long':'gross')+' exposure. Exposure is reported from Sep 2008.';
+
+  const root=document.getElementById('root');
+  root.innerHTML = `
+    <div class="header">
+      <div>
+        <h1>BG Fund — Sub-Strategy Track Record</h1>
+        <div class="sub">Boussard & Gavaudan Flagship Fund · reconstructed monthly returns by strategy · ${fmtDate(DATA.perf[0].d)} – ${fmtDate(DATA.perf[DATA.perf.length-1].d)}</div>
+      </div>
+    </div>
+    <div class="controls">
+      <label>Return base</label>
+      <div class="pillbar">
+        ${Object.entries(BASES).map(([k,v])=>`<div class="pill ${k===base?'active':''}" onclick="state.base='${k}';render()">${v.label}</div>`).join('')}
+      </div>
+    </div>
+    <div class="note">${baseNote} Each strategy’s track record starts at its first available month (the attribution sheet breaks strategies out at different dates: 2003 / 2009 / 2016). Chained ${B.mode==='mult'?'multiplicatively (base 100)':'additively (cumulative bps)'}.</div>
+
+    <div class="card">
+      <h3>Cumulative Track Record — ${B.mode==='mult'?'Base 100':'Cumulative bps'}</h3>
+      <div class="desc">Each line starts at its own inception · ${B.label} basis</div>
+      <div class="chart-wrap tall"><canvas id="cumChart"></canvas></div>
+    </div>
+
+    <div class="section-title">Performance Statistics — ${B.label} basis</div>
+    <div class="card" style="padding:0;overflow-x:auto">
+      <table class="stats" id="statsTable"></table>
+    </div>
+
+    <div class="controls" style="margin-top:8px">
+      <label>Strategy detail</label>
+      <select onchange="state.strat=this.value;render()">
+        ${STRATS.map(g=>`<option value="${g.k}" ${g.k===state.strat?'selected':''}>${g.l}</option>`).join('')}
+      </select>
+    </div>
+    <div class="card">
+      <h3 id="ddTitle"></h3><div class="desc">Drawdown from running peak</div>
+      <div class="chart-wrap"><canvas id="ddChart"></canvas></div>
+    </div>
+    <div class="section-title">Monthly Returns — <span id="calTitle"></span></div>
+    <div class="card" style="padding:12px"><div class="heatmap-wrap"><table class="heatmap" id="calTable"></table></div></div>
+    <div class="foot">Source: BG Fund historical workbook (attribution = P&L, exposure & EAR = bases). “Convertible bond & Mandatory” merges Mandatory CB + CB Arbitrage; “Trading” merges Trading + Quant + Systematic + Other, to line up the P&L and Exposure breakdowns. Sharpe/Sortino = (mean × 12) ÷ annualised vol / downside-dev, no risk-free rate.</div>
+  `;
+
+  // ===== cumulative chart =====
+  charts.cum = new Chart(document.getElementById('cumChart'),{
+    type:'line',
+    data:{ labels:masterDates.map(fmtDate), datasets: allSeries.map(({g,s})=>{
+      const arr=new Array(masterDates.length).fill(null);
+      s.dates.forEach((d,i)=>{ if(dateIdx[d]!=null) arr[dateIdx[d]]=s.idx[i]; });
+      const isTot=g.total;
+      return {label:g.l, data:arr, borderColor:g.color, backgroundColor:g.color+'10',
+        borderWidth:isTot?2.2:1.4, borderDash:isTot?[5,3]:[], pointRadius:0, spanGaps:false, fill:false};
+    })},
+    options:{responsive:true,maintainAspectRatio:false,interaction:{mode:'index',intersect:false},
+      plugins:{legend:{position:'bottom',labels:{font:{size:10},usePointStyle:true,pointStyleWidth:8,boxHeight:6}},
+        tooltip:{callbacks:{label:ctx=>ctx.parsed.y==null?null:ctx.dataset.label+': '+(B.mode==='mult'?ctx.parsed.y.toFixed(1)+' ('+(ctx.parsed.y-100>=0?'+':'')+(ctx.parsed.y-100).toFixed(1)+'%)':Math.round(ctx.parsed.y)+' bps')}}},
+      scales:{x:{ticks:{maxTicksLimit:14,color:'#64748b'},grid:{color:'#1a2234'}},
+        y:{title:{display:true,text:B.mode==='mult'?'Base 100':'Cumulative bps',color:'#94a3b8'},ticks:{color:'#64748b'},grid:{color:'#1a2234'}}}}
+  });
+
+  // ===== stats table =====
+  const anyGap=allSeries.some(({s})=>s.gaps>0);
+  let h='<thead><tr><th>Strategy</th><th>From</th><th>Months</th>'+(anyGap?'<th>Gaps</th>':'')+'<th>Total</th><th>Annualised</th><th>Vol</th><th>Sharpe*</th><th>Sortino*</th><th>Max DD</th><th>Best</th><th>Worst</th><th>% Pos</th></tr></thead><tbody>';
+  allSeries.forEach(({g,s})=>{
+    const tot=g.total;
+    h+='<tr'+(tot?' style="border-top:2px solid var(--accent)"':'')+'>'
+      +'<td'+(tot?' style="font-weight:700"':'')+'><span class="swatch" style="background:'+g.color+'"></span>'+g.l+'</td>'
+      +'<td>'+(s.n?fmtDate(s.start):'—')+'</td>'
+      +'<td>'+s.n+'</td>'
+      +(anyGap?'<td'+(s.gaps>0?' style="color:var(--amber)"':'')+'>'+(s.gaps||'')+'</td>':'')
+      +'<td class="'+numColor(s.cum)+'">'+fmtCum(s)+'</td>'
+      +'<td class="'+numColor(s.ann)+'">'+fmtAnn(s)+'</td>'
+      +'<td>'+fmtVol(s)+'</td>'
+      +'<td class="'+numColor(s.sharpe)+'">'+s.sharpe.toFixed(2)+'</td>'
+      +'<td class="'+numColor(s.sortino)+'">'+s.sortino.toFixed(2)+'</td>'
+      +'<td class="neg">'+fmtDD(s)+'</td>'
+      +'<td class="pos">'+fmtBW(s.best,s)+'</td>'
+      +'<td class="neg">'+fmtBW(s.worst,s)+'</td>'
+      +'<td>'+(s.pctPos*100).toFixed(0)+'%</td></tr>';
+  });
+  h+='</tbody>';
+  document.getElementById('statsTable').innerHTML=h;
+
+  // ===== selected strategy: drawdown + calendar =====
+  const g=STRATS.find(x=>x.k===state.strat)||STRATS[0];
+  const s=buildSeries(g, base);
+  document.getElementById('ddTitle').textContent='Drawdown — '+g.l;
+  document.getElementById('calTitle').textContent=g.l+' / '+B.label;
+
+  // drawdown series
+  const ddArr=[]; let peak=-Infinity;
+  s.idx.forEach((v,i)=>{ if(v>peak)peak=v; ddArr.push(B.mode==='add'? (v-peak) : (v/peak-1)); });
+  charts.dd=new Chart(document.getElementById('ddChart'),{
+    type:'line',
+    data:{labels:s.dates.map(fmtDate),datasets:[{label:'Drawdown',data:ddArr.map(v=>B.mode==='add'?v:v*100),borderColor:'#ef4444',backgroundColor:'rgba(239,68,68,.15)',fill:true,borderWidth:1.4,pointRadius:0}]},
+    options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:{callbacks:{label:ctx=>B.mode==='add'?Math.round(ctx.parsed.y)+' bps':ctx.parsed.y.toFixed(2)+'%'}}},
+      scales:{x:{ticks:{maxTicksLimit:12,color:'#64748b'},grid:{color:'#1a2234'}},y:{ticks:{color:'#64748b',callback:v=>B.mode==='add'?v+'':v+'%'},grid:{color:'#1a2234'}}}}
+  });
+
+  // calendar year × month of monthly values
+  const byYear={};
+  s.dates.forEach((d,i)=>{ const dt=new Date(d),y=dt.getFullYear(),m=dt.getMonth(); if(!byYear[y])byYear[y]=new Array(12).fill(undefined); byYear[y][m]=s.vals[i]; });
+  const years=Object.keys(byYear).map(Number).sort((a,b)=>b-a);
+  const absV=[].concat(...years.map(y=>byYear[y])).filter(v=>v!=null).map(Math.abs).sort((a,b)=>a-b);
+  const cap=absV.length?(absV[Math.floor(absV.length*0.9)]||absV[absV.length-1]):1;
+  function cstyle(v){ if(v==null)return 'background:var(--surface3);color:var(--text3)'; const a=cap>0?Math.min(Math.abs(v)/cap,1):0;
+    if(v>0)return 'background:rgba(16,185,129,'+(0.06+a*0.5).toFixed(3)+');color:'+(a>0.6?'#fff':'var(--green)');
+    if(v<0)return 'background:rgba(239,68,68,'+(0.06+a*0.5).toFixed(3)+');color:'+(a>0.6?'#fff':'var(--red)'); return ''; }
+  const MN=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  function ytd(ms){ if(B.mode==='add'){let t=0,c=0;ms.forEach(v=>{if(v!=null){t+=v;c++;}});return c?t:null;} let x=1,c=0;ms.forEach(v=>{if(v!=null){x*=(1+v);c++;}});return c?x-1:null; }
+  let ch='<thead><tr><th>Year</th>'+MN.map(m=>'<th>'+m+'</th>').join('')+'<th style="background:var(--surface2)">'+(B.mode==='add'?'Total':'YTD')+'</th></tr></thead><tbody>';
+  years.forEach(y=>{ const ms=byYear[y]; ch+='<tr><td>'+y+'</td>';
+    ms.forEach(v=>{ if(v===undefined)ch+='<td></td>'; else ch+='<td style="'+cstyle(v)+'">'+(v!=null?fmtVal(v,B.mode, B.mode==='add'?0:2):'—')+'</td>'; });
+    const yt=ytd(ms); ch+='<td style="font-weight:700;'+(yt==null?'':(yt>=0?'color:var(--green)':'color:var(--red)'))+'">'+(yt!=null?fmtVal(yt,B.mode,B.mode==='add'?0:2):'—')+'</td></tr>'; });
+  ch+='</tbody>';
+  document.getElementById('calTable').innerHTML=ch;
+}
+
+Chart.defaults.color='#94a3b8';
+Chart.defaults.font.family="'DM Sans',sans-serif";
+Chart.defaults.font.size=11;
+render();
+</script>
+</body>
+</html>
