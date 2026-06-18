@@ -111,6 +111,7 @@ const BASES = {
   gross: {label:'Gross exposure', mode:'mult', unit:'%'},
   long:  {label:'Long exposure',  mode:'mult', unit:'%'},
   ear:   {label:'EAR',            mode:'mult', unit:'%'},
+  earpct:{label:'EAR (rebased 100%)', mode:'mult', unit:'%'},
   bps:   {label:'Contribution (bps)', mode:'add', unit:'bps'},
 };
 const state = {base:'gross', strat:'cbm', start:null, end:null};
@@ -137,7 +138,11 @@ function contribOf(g,r){
 }
 function baseVal(g,r,base){ // fraction of NAV, or null
   const ym=r.d.slice(0,7);
-  if(base==='ear'){const e=earByYM[ym];return e&&e[g.ear]!=null?e[g.ear]:null;}
+  if(base==='ear'||base==='earpct'){
+    const e=earByYM[ym]; if(!e||e[g.ear]==null) return null;
+    if(base==='earpct'){ if(e.te==null||e.te===0) return null; return e[g.ear]/e.te; }  // bucket as share of total EAR (Σ=100%)
+    return e[g.ear];
+  }
   const x=expByYM[ym]; if(!x) return null;
   const keys = base==='long' ? (g.total?['l']:g.expL) : (g.total?['g']:g.exp);
   let s=0,any=false; keys.forEach(k=>{if(x[k]!=null){s+=x[k];any=true;}}); return any?s:null;
@@ -214,6 +219,8 @@ function render(){
 
   const baseNote = base==='ear'
     ? 'Return = monthly contribution ÷ EAR (parent asset-class bucket). EAR is reported from 2003.'
+    : base==='earpct'
+    ? 'Return = monthly contribution ÷ EAR rebased to 100% (each bucket as a share of total EAR, which sums to 100%). The Total Fund line then equals the fund’s actual NAV return. EAR is reported from 2003.'
     : base==='bps'
       ? 'Cumulative monthly P&L contribution in bps (no normalisation) — how much each strategy added to the fund.'
       : 'Return = monthly contribution ÷ the strategy’s own '+(base==='long'?'long':'gross')+' exposure. Exposure is reported from Sep 2008.';
