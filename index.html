@@ -26,6 +26,10 @@ select{background:var(--surface2);color:var(--text);border:1px solid var(--borde
 .pillbar{display:flex;gap:6px;flex-wrap:wrap}
 .pill{background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:8px 14px;font-size:12px;color:var(--text2);cursor:pointer;transition:all .15s}
 .pill.active{color:var(--accent2);border-color:var(--accent);background:rgba(59,130,246,.1)}
+.tabbar{display:flex;gap:2px;border-bottom:1px solid var(--border);margin:6px 0 16px;flex-wrap:wrap}
+.tab{padding:10px 16px;font-size:13px;font-weight:500;color:var(--text2);cursor:pointer;border-bottom:2px solid transparent;margin-bottom:-1px;transition:color .15s}
+.tab:hover{color:var(--text)}
+.tab.active{color:var(--accent2);border-bottom-color:var(--accent)}
 .note{font-size:12px;color:var(--text2);margin:0 0 16px;line-height:1.5}
 .card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:18px;margin-bottom:18px}
 .card h3{font-size:14px;margin:0 0 2px;font-weight:600}
@@ -116,7 +120,14 @@ const BASES = {
   earpct:  {label:'EAR (rebased 100%)', mode:'mult', unit:'%'},
   bps:     {label:'Contribution (bps)', mode:'add', unit:'bps'},
 };
-const state = {base:'gross', strat:'cbm', start:null, end:null};
+const VIEWS = [
+  {k:'track', l:'Track Record'},
+  {k:'corr',  l:'Correlation'},
+  {k:'beta',  l:'Beta'},
+  {k:'vol',   l:'Volatility'},
+  {k:'dd',    l:'Drawdowns'},
+];
+const state = {base:'gross', strat:'cbm', start:null, end:null, view:'track', win:24, hl:12, ref:'_t'};
 
 // ===== joins (by year-month, sheets use month-end vs last-business-day) =====
 let expByYM={}, earByYM={};
@@ -206,6 +217,61 @@ function fmtDD(s){ return s.mode==='add'? Math.round(Math.abs(s.dd))+' bps' : pc
 function fmtBW(v,s){ return s.mode==='add'? bpsR(v,0) : pctR(v); }
 const numColor=v=>v>0?'pos':v<0?'neg':'';
 
+// ===== analytics helpers (correlation / beta / vol / drawdown) =====
+function mapOf(s){ const m={}; s.dates.forEach((d,i)=>{ if(s.vals[i]!=null) m[d]=s.vals[i]; }); return m; }   // date → monthly value
+function alignVals(ma,mb){ const xs=[],ys=[]; Object.keys(ma).forEach(d=>{ if(mb[d]!=null){xs.push(ma[d]);ys.push(mb[d]);} }); return {xs,ys,n:xs.length}; }
+function corr(xs,ys){ const n=xs.length; if(n<2)return null; const mx=mean(xs),my=mean(ys); let sxy=0,sxx=0,syy=0;
+  for(let i=0;i<n;i++){const dx=xs[i]-mx,dy=ys[i]-my; sxy+=dx*dy; sxx+=dx*dx; syy+=dy*dy;} const den=Math.sqrt(sxx*syy); return den>0?sxy/den:null; }
+function betaOLS(xs,ys){ const n=xs.length; if(n<2)return null; const mx=mean(xs),my=mean(ys); let sxy=0,syy=0;   // beta of x on y = cov/var(y)
+  for(let i=0;i<n;i++){const dx=xs[i]-mx,dy=ys[i]-my; sxy+=dx*dy; syy+=dy*dy;} return syy>0?sxy/syy:null; }
+function rollingPair(sm,rm,win,fn){ const ds=[],xs=[],ys=[]; Object.keys(sm).sort().forEach(d=>{ if(rm[d]!=null){ds.push(d);xs.push(sm[d]);ys.push(rm[d]);} });
+  const out={}; for(let i=win-1;i<ds.length;i++){ const v=fn(xs.slice(i-win+1,i+1),ys.slice(i-win+1,i+1)); if(v!=null)out[ds[i]]=v; } return out; }
+function rollingSolo(sm,win,fn){ const ds=Object.keys(sm).sort(),xs=ds.map(d=>sm[d]); const out={};
+  for(let i=win-1;i<ds.length;i++){ const v=fn(xs.slice(i-win+1,i+1)); if(v!=null)out[ds[i]]=v; } return out; }
+function ewmaPair(sm,rm,lam){ const ds=[],xs=[],ys=[]; Object.keys(sm).sort().forEach(d=>{ if(rm[d]!=null){ds.push(d);xs.push(sm[d]);ys.push(rm[d]);} }); // RiskMetrics zero-mean EWMA beta
+  const out={}; let cov=null,vr=null; for(let i=0;i<ds.length;i++){ const x=xs[i],y=ys[i];
+    if(cov==null){cov=x*y;vr=y*y;} else {cov=lam*cov+(1-lam)*x*y; vr=lam*vr+(1-lam)*y*y;} if(vr>0&&i>=1)out[ds[i]]=cov/vr; } return out; }
+function ewmaVol(sm,lam,ann){ const ds=Object.keys(sm).sort(),xs=ds.map(d=>sm[d]); const out={}; let v=null;   // zero-mean EWMA σ, annualised
+  for(let i=0;i<xs.length;i++){ const x=xs[i]; v=v==null?x*x:lam*v+(1-lam)*x*x; if(i>=1)out[ds[i]]=Math.sqrt(v)*ann; } return out; }
+function ddPts(s,mode){ const out={}; let peak=-Infinity; s.idx.forEach((v,i)=>{ if(v>peak)peak=v; out[s.dates[i]]= mode==='add'?(v-peak):(v/peak-1); }); return out; }
+function lastOf(o){ const ks=Object.keys(o).sort(); return ks.length?o[ks[ks.length-1]]:null; }
+
+// generic multi-line chart over the master date axis; items=[{label,color,pts,width,dash,fill}]
+function multiLine(id,ctx,items,yTitle,fmtY,yRange){
+  const el=document.getElementById(id); if(!el)return;
+  charts[id]=new Chart(el,{type:'line',
+    data:{labels:ctx.masterDates.map(fmtDate),datasets:items.map(it=>({label:it.label,
+      data:ctx.masterDates.map(d=>it.pts[d]==null?null:it.pts[d]),borderColor:it.color,backgroundColor:it.color+'18',
+      borderWidth:it.width||1.4,borderDash:it.dash||[],pointRadius:0,spanGaps:false,fill:it.fill||false}))},
+    options:{responsive:true,maintainAspectRatio:false,interaction:{mode:'index',intersect:false},
+      plugins:{legend:{position:'bottom',labels:{font:{size:10},usePointStyle:true,pointStyleWidth:8,boxHeight:6}},
+        tooltip:{callbacks:{label:c=>c.parsed.y==null?null:c.dataset.label+': '+fmtY(c.parsed.y)}}},
+      scales:{x:{ticks:{maxTicksLimit:14,color:'#64748b'},grid:{color:'#1a2234'}},
+        y:Object.assign({title:{display:true,text:yTitle,color:'#94a3b8'},ticks:{color:'#64748b',callback:fmtY},grid:{color:'#1a2234'}},yRange||{})}}
+  });
+}
+// strategy-as-line items from allSeries
+function stratLines(ctx,fn,exclude){
+  return ctx.allSeries.filter(({g})=>g.k!==exclude).map(({g,s})=>({label:g.l,color:g.color,pts:fn(g,s),width:g.total?2.4:1.4,dash:g.total?[5,3]:[]}));
+}
+// shared sub-controls
+function ctrlWin(){ return '<label>Window</label><select onchange="state.win=+this.value;render()">'+[6,12,24,36,60].map(w=>'<option value="'+w+'" '+(w===state.win?'selected':'')+'>'+w+'m</option>').join('')+'</select>'; }
+function ctrlHL(){ return '<label>EWMA ½-life</label><select onchange="state.hl=+this.value;render()">'+[3,6,12,24].map(w=>'<option value="'+w+'" '+(w===state.hl?'selected':'')+'>'+w+'m</option>').join('')+'</select>'; }
+function ctrlRef(){ return '<label>Reference</label><select onchange="state.ref=this.value;render()">'+STRATS.map(g=>'<option value="'+g.k+'" '+(g.k===state.ref?'selected':'')+'>'+g.l+'</option>').join('')+'</select>'; }
+function ctrlStrat(){ return '<label>Strategy</label><select onchange="state.strat=this.value;render()">'+STRATS.map(g=>'<option value="'+g.k+'" '+(g.k===state.strat?'selected':'')+'>'+g.l+'</option>').join('')+'</select>'; }
+function corrCell(c){ if(c==null)return 'color:var(--text3)'; const a=Math.min(Math.abs(c),1);
+  if(c>=0)return 'background:rgba(16,185,129,'+(0.05+a*0.5).toFixed(3)+');color:'+(a>0.6?'#fff':'var(--green)');
+  return 'background:rgba(239,68,68,'+(0.05+a*0.5).toFixed(3)+');color:'+(a>0.6?'#fff':'var(--red)'); }
+function corrMatrixHtml(maps){
+  let h='<thead><tr><th></th>'+STRATS.map(g=>'<th title="'+g.l+'">'+g.k.replace('_','').toUpperCase()+'</th>').join('')+'</tr></thead><tbody>';
+  STRATS.forEach(gi=>{ h+='<tr><td title="'+gi.l+'">'+gi.k.replace('_','').toUpperCase()+'</td>';
+    STRATS.forEach(gj=>{ if(gi.k===gj.k){h+='<td style="background:var(--surface3);color:var(--text3)">1.00</td>';return;}
+      const a=alignVals(maps[gi.k],maps[gj.k]); const c=a.n>=12?corr(a.xs,a.ys):null;
+      h+='<td title="'+a.n+' mo overlap" style="'+corrCell(c)+'">'+(c==null?'—':c.toFixed(2))+'</td>'; });
+    h+='</tr>'; });
+  return h+'</tbody>';
+}
+
 // ===== render =====
 function render(){
   destroy();
@@ -221,6 +287,7 @@ function render(){
   // master date axis
   const masterDates = perf.map(r=>r.d);
   const dateIdx={}; masterDates.forEach((d,i)=>dateIdx[d]=i);
+  const ctx={base,B,allDates,lo,hi,perf,allSeries,masterDates,dateIdx};
 
   const baseNote = base==='ear'
     ? 'Return = monthly contribution ÷ EAR (parent asset-class bucket). EAR is reported from 2003.'
@@ -260,8 +327,20 @@ function render(){
         ${(lo!==allDates[0]||hi!==allDates[allDates.length-1])?`<button class="btn" onclick="state.start=null;state.end=null;render()">Reset</button>`:''}
       </div>
     </div>
+    <div class="tabbar">
+      ${VIEWS.map(v=>`<div class="tab ${v.k===state.view?'active':''}" onclick="state.view='${v.k}';render()">${v.l}</div>`).join('')}
+    </div>
     <div class="note">${baseNote} Each strategy’s track record starts at its first available month (the attribution sheet breaks strategies out at different dates: 2003 / 2009 / 2016). Chained ${B.mode==='mult'?'multiplicatively (base 100)':'additively (cumulative bps)'}.</div>
+    <div id="viewRoot"></div>
+    <div class="foot">Source: BG Fund historical workbook (attribution = P&L, exposure & EAR = bases). “Convertible bond & Mandatory” merges Mandatory CB + CB Arbitrage; “Trading” merges Trading + Quant + Systematic + Other, to line up the P&L and Exposure breakdowns. Sharpe/Sortino = (mean × 12) ÷ annualised vol / downside-dev, no risk-free rate. Beta/correlation use the selected return basis; EWMA = RiskMetrics-style exponential weighting; vol annualised × √12.</div>
+  `;
+  ({track:renderTrack, corr:renderCorr, beta:renderBeta, vol:renderVol, dd:renderDD}[state.view]||renderTrack)(ctx);
+}
 
+// ===== view: Track Record =====
+function renderTrack(ctx){
+  const {base,B,allSeries,masterDates,dateIdx,perf}=ctx;
+  document.getElementById('viewRoot').innerHTML = `
     <div class="card">
       <h3>Cumulative Track Record — ${B.mode==='mult'?'Base 100':'Cumulative bps'}</h3>
       <div class="desc">Each line starts at its own inception · ${B.label} basis</div>
@@ -285,7 +364,6 @@ function render(){
     </div>
     <div class="section-title">Monthly Returns — <span id="calTitle"></span></div>
     <div class="card" style="padding:12px"><div class="heatmap-wrap"><table class="heatmap" id="calTable"></table></div></div>
-    <div class="foot">Source: BG Fund historical workbook (attribution = P&L, exposure & EAR = bases). “Convertible bond & Mandatory” merges Mandatory CB + CB Arbitrage; “Trading” merges Trading + Quant + Systematic + Other, to line up the P&L and Exposure breakdowns. Sharpe/Sortino = (mean × 12) ÷ annualised vol / downside-dev, no risk-free rate.</div>
   `;
 
   // ===== cumulative chart =====
@@ -361,6 +439,122 @@ function render(){
     const yt=ytd(ms); ch+='<td style="font-weight:700;'+(yt==null?'':(yt>=0?'color:var(--green)':'color:var(--red)'))+'">'+(yt!=null?fmtVal(yt,B.mode,B.mode==='add'?0:2):'—')+'</td></tr>'; });
   ch+='</tbody>';
   document.getElementById('calTable').innerHTML=ch;
+}
+
+// ===== view: Correlation =====
+function renderCorr(ctx){
+  const {B,allSeries}=ctx;
+  const ref=STRATS.find(x=>x.k===state.ref)||STRATS.find(x=>x.total);
+  const maps={}; allSeries.forEach(({g,s})=>maps[g.k]=mapOf(s));
+  const refMap=maps[ref.k];
+  document.getElementById('viewRoot').innerHTML = `
+    <div class="controls" style="margin-top:0">${ctrlRef()}${ctrlWin()}</div>
+    <div class="card">
+      <h3>Rolling Correlation vs ${ref.l}</h3>
+      <div class="desc">${state.win}-month rolling window · ${B.label} basis · reference line excluded</div>
+      <div class="chart-wrap tall"><canvas id="corrRoll"></canvas></div>
+    </div>
+    <div class="section-title">Full-Period Correlation Matrix</div>
+    <div class="card" style="padding:12px"><div class="heatmap-wrap"><table class="heatmap" id="corrMat"></table></div></div>`;
+  const items=allSeries.filter(({g})=>g.k!==ref.k).map(({g})=>({label:g.l,color:g.color,
+    pts:rollingPair(maps[g.k],refMap,state.win,corr),width:g.total?2.4:1.4,dash:g.total?[5,3]:[]}));
+  multiLine('corrRoll',ctx,items,'Correlation',v=>v.toFixed(2),{min:-1,max:1});
+  document.getElementById('corrMat').innerHTML=corrMatrixHtml(maps);
+}
+
+// ===== view: Beta (rolling OLS + EWMA) =====
+function renderBeta(ctx){
+  const {B,allSeries}=ctx;
+  const ref=STRATS.find(x=>x.k===state.ref)||STRATS.find(x=>x.total);
+  const focus=STRATS.find(x=>x.k===state.strat)||STRATS[0];
+  const maps={}; allSeries.forEach(({g,s})=>maps[g.k]=mapOf(s));
+  const refMap=maps[ref.k];
+  const lam=Math.pow(2,-1/state.hl);
+  document.getElementById('viewRoot').innerHTML = `
+    <div class="controls" style="margin-top:0">${ctrlRef()}${ctrlStrat()}${ctrlWin()}${ctrlHL()}</div>
+    <div class="card">
+      <h3>Beta vs ${ref.l} — ${focus.l}</h3>
+      <div class="desc">${state.win}m rolling OLS β vs EWMA β (½-life ${state.hl}m) · ${B.label} basis${focus.k===ref.k?' · pick a different strategy than the reference':''}</div>
+      <div class="chart-wrap tall"><canvas id="betaFocus"></canvas></div>
+    </div>
+    <div class="section-title">Beta Summary — vs ${ref.l}</div>
+    <div class="card" style="padding:0;overflow-x:auto"><table class="stats" id="betaTable"></table></div>`;
+  if(focus.k!==ref.k){
+    multiLine('betaFocus',ctx,[
+      {label:state.win+'m rolling β',color:focus.color,pts:rollingPair(maps[focus.k],refMap,state.win,betaOLS),width:1.8},
+      {label:'EWMA β (½-life '+state.hl+'m)',color:'#f59e0b',pts:ewmaPair(maps[focus.k],refMap,lam),width:1.8,dash:[4,3]},
+    ],'Beta',v=>v.toFixed(2));
+  }
+  let h='<thead><tr><th>Strategy</th><th>Overlap</th><th>Corr</th><th>R²</th><th>β full</th><th>β '+state.win+'m</th><th>β EWMA</th></tr></thead><tbody>';
+  allSeries.forEach(({g})=>{ if(g.k===ref.k)return;
+    const a=alignVals(maps[g.k],refMap), c=a.n>=2?corr(a.xs,a.ys):null, bf=a.n>=2?betaOLS(a.xs,a.ys):null;
+    const br=lastOf(rollingPair(maps[g.k],refMap,state.win,betaOLS)), be=lastOf(ewmaPair(maps[g.k],refMap,lam));
+    h+='<tr><td><span class="swatch" style="background:'+g.color+'"></span>'+g.l+'</td>'
+      +'<td>'+a.n+'</td><td>'+(c==null?'—':c.toFixed(2))+'</td><td>'+(c==null?'—':(c*c).toFixed(2))+'</td>'
+      +'<td class="'+numColor(bf)+'">'+(bf==null?'—':bf.toFixed(2))+'</td>'
+      +'<td class="'+numColor(br)+'">'+(br==null?'—':br.toFixed(2))+'</td>'
+      +'<td class="'+numColor(be)+'">'+(be==null?'—':be.toFixed(2))+'</td></tr>'; });
+  document.getElementById('betaTable').innerHTML=h+'</tbody>';
+}
+
+// ===== view: Volatility (rolling + EWMA, annualised) =====
+function renderVol(ctx){
+  const {B,allSeries}=ctx;
+  const ann=Math.sqrt(12), mult=B.mode!=='add';
+  const fmtY=mult?(v=>(v*100).toFixed(1)+'%'):(v=>Math.round(v)+' bps');
+  const maps={}; allSeries.forEach(({g,s})=>maps[g.k]=mapOf(s));
+  const focus=STRATS.find(x=>x.k===state.strat)||STRATS[0];
+  const lam=Math.pow(2,-1/state.hl);
+  document.getElementById('viewRoot').innerHTML = `
+    <div class="controls" style="margin-top:0">${ctrlStrat()}${ctrlWin()}${ctrlHL()}</div>
+    <div class="card">
+      <h3>Rolling Annualised Volatility — all strategies</h3>
+      <div class="desc">${state.win}-month rolling σ × √12 · ${B.label} basis</div>
+      <div class="chart-wrap tall"><canvas id="volAll"></canvas></div>
+    </div>
+    <div class="card">
+      <h3>Rolling vs EWMA Volatility — ${focus.l}</h3>
+      <div class="desc">${state.win}m rolling vs EWMA (½-life ${state.hl}m), annualised</div>
+      <div class="chart-wrap"><canvas id="volFocus"></canvas></div>
+    </div>
+    <div class="section-title">Volatility Summary (annualised)</div>
+    <div class="card" style="padding:0;overflow-x:auto"><table class="stats" id="volTable"></table></div>`;
+  const items=allSeries.map(({g})=>({label:g.l,color:g.color,
+    pts:rollingSolo(maps[g.k],state.win,a=>std(a)*ann),width:g.total?2.4:1.4,dash:g.total?[5,3]:[]}));
+  multiLine('volAll',ctx,items,'Annualised vol',fmtY,{min:0});
+  multiLine('volFocus',ctx,[
+    {label:state.win+'m rolling σ',color:focus.color,pts:rollingSolo(maps[focus.k],state.win,a=>std(a)*ann),width:1.8},
+    {label:'EWMA σ (½-life '+state.hl+'m)',color:'#f59e0b',pts:ewmaVol(maps[focus.k],lam,ann),width:1.8,dash:[4,3]},
+  ],'Annualised vol',fmtY,{min:0});
+  let h='<thead><tr><th>Strategy</th><th>Months</th><th>Full vol</th><th>'+state.win+'m vol</th><th>EWMA vol</th></tr></thead><tbody>';
+  allSeries.forEach(({g})=>{ const vals=Object.values(maps[g.k]);
+    const full=vals.length>1?std(vals)*ann:null, lr=lastOf(rollingSolo(maps[g.k],state.win,a=>std(a)*ann)), le=lastOf(ewmaVol(maps[g.k],lam,ann));
+    h+='<tr'+(g.total?' style="border-top:2px solid var(--accent)"':'')+'><td'+(g.total?' style="font-weight:700"':'')+'><span class="swatch" style="background:'+g.color+'"></span>'+g.l+'</td>'
+      +'<td>'+vals.length+'</td><td>'+(full==null?'—':fmtY(full))+'</td><td>'+(lr==null?'—':fmtY(lr))+'</td><td>'+(le==null?'—':fmtY(le))+'</td></tr>'; });
+  document.getElementById('volTable').innerHTML=h+'</tbody>';
+}
+
+// ===== view: Drawdowns (all strategies + fund) =====
+function renderDD(ctx){
+  const {B,allSeries}=ctx;
+  const mode=B.mode, mult=mode!=='add';
+  const fmtY=mult?(v=>(v*100).toFixed(1)+'%'):(v=>Math.round(v)+' bps');
+  document.getElementById('viewRoot').innerHTML = `
+    <div class="card">
+      <h3>Underwater Drawdowns — all strategies + fund</h3>
+      <div class="desc">Drawdown from each line's own running peak · ${B.label} basis</div>
+      <div class="chart-wrap tall"><canvas id="ddAll"></canvas></div>
+    </div>
+    <div class="section-title">Drawdown Summary</div>
+    <div class="card" style="padding:0;overflow-x:auto"><table class="stats" id="ddTable"></table></div>`;
+  const items=allSeries.map(({g,s})=>({label:g.l,color:g.color,pts:ddPts(s,mode),width:g.total?2.4:1.4,dash:g.total?[5,3]:[]}));
+  multiLine('ddAll',ctx,items,'Drawdown',fmtY,{max:0});
+  let h='<thead><tr><th>Strategy</th><th>Months</th><th>Max DD</th><th>Peak</th><th>Trough</th><th>Current DD</th></tr></thead><tbody>';
+  allSeries.forEach(({g,s})=>{ const cur=lastOf(ddPts(s,mode));
+    h+='<tr'+(g.total?' style="border-top:2px solid var(--accent)"':'')+'><td'+(g.total?' style="font-weight:700"':'')+'><span class="swatch" style="background:'+g.color+'"></span>'+g.l+'</td>'
+      +'<td>'+s.n+'</td><td class="neg">'+fmtDD(s)+'</td><td>'+(s.ddPk?fmtDate(s.ddPk):'—')+'</td><td>'+(s.ddEnd?fmtDate(s.ddEnd):'—')+'</td>'
+      +'<td class="'+(cur<0?'neg':'')+'">'+(cur==null?'—':fmtY(cur))+'</td></tr>'; });
+  document.getElementById('ddTable').innerHTML=h+'</tbody>';
 }
 
 // ===== import =====
