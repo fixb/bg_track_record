@@ -108,11 +108,13 @@ const STRATS = [
   {k:'_t',  l:'Total Fund',                              color:'#e2e8f0', perf:null,        ear:'te', exp:null, expL:null, total:true},
 ];
 const BASES = {
-  gross: {label:'Gross exposure', mode:'mult', unit:'%'},
-  long:  {label:'Long exposure',  mode:'mult', unit:'%'},
-  ear:   {label:'EAR',            mode:'mult', unit:'%'},
-  earpct:{label:'EAR (rebased 100%)', mode:'mult', unit:'%'},
-  bps:   {label:'Contribution (bps)', mode:'add', unit:'bps'},
+  gross:   {label:'Gross exposure', mode:'mult', unit:'%'},
+  grosspct:{label:'Gross exposure (rebased 100%)', mode:'mult', unit:'%'},
+  long:    {label:'Long exposure',  mode:'mult', unit:'%'},
+  longpct: {label:'Long exposure (rebased 100%)', mode:'mult', unit:'%'},
+  ear:     {label:'EAR',            mode:'mult', unit:'%'},
+  earpct:  {label:'EAR (rebased 100%)', mode:'mult', unit:'%'},
+  bps:     {label:'Contribution (bps)', mode:'add', unit:'bps'},
 };
 const state = {base:'gross', strat:'cbm', start:null, end:null};
 
@@ -144,8 +146,11 @@ function baseVal(g,r,base){ // fraction of NAV, or null
     return e[g.ear];
   }
   const x=expByYM[ym]; if(!x) return null;
-  const keys = base==='long' ? (g.total?['l']:g.expL) : (g.total?['g']:g.exp);
-  let s=0,any=false; keys.forEach(k=>{if(x[k]!=null){s+=x[k];any=true;}}); return any?s:null;
+  const isLong = base==='long'||base==='longpct';
+  const keys = isLong ? (g.total?['l']:g.expL) : (g.total?['g']:g.exp);
+  let s=0,any=false; keys.forEach(k=>{if(x[k]!=null){s+=x[k];any=true;}}); if(!any) return null;
+  if(base==='grosspct'||base==='longpct'){ const tot=isLong?x.l:x.g; if(tot==null||tot===0) return null; return s/tot; }  // bucket as share of total exposure (Σ=100%)
+  return s;
 }
 
 // monthly series (value = ret fraction, or bps for additive) from the strategy's inception
@@ -221,6 +226,8 @@ function render(){
     ? 'Return = monthly contribution ÷ EAR (parent asset-class bucket). EAR is reported from 2003.'
     : base==='earpct'
     ? 'Return = monthly contribution ÷ EAR rebased to 100% (each bucket as a share of total EAR, which sums to 100%). The Total Fund line then equals the fund’s actual NAV return. EAR is reported from 2003.'
+    : base==='grosspct'||base==='longpct'
+    ? 'Return = monthly contribution ÷ '+(base==='longpct'?'long':'gross')+' exposure rebased to 100% (each bucket as a share of total '+(base==='longpct'?'long':'gross')+' exposure, which sums to 100%). The Total Fund line then equals the fund’s actual NAV return. Exposure is reported from Sep 2008.'
     : base==='bps'
       ? 'Cumulative monthly P&L contribution in bps (no normalisation) — how much each strategy added to the fund.'
       : 'Return = monthly contribution ÷ the strategy’s own '+(base==='long'?'long':'gross')+' exposure. Exposure is reported from Sep 2008.';
