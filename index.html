@@ -127,7 +127,7 @@ const VIEWS = [
   {k:'vol',   l:'Volatility'},
   {k:'dd',    l:'Drawdowns'},
 ];
-const state = {base:'gross', strat:'cbm', start:null, end:null, view:'track', win:24, hl:12, ref:'_t'};
+const state = {base:'earpct', strat:'cbm', start:'2016-03-31', end:null, view:'track', win:24, hl:12, ref:'_t'};
 
 // ===== joins (by year-month, sheets use month-end vs last-business-day) =====
 let expByYM={}, earByYM={};
